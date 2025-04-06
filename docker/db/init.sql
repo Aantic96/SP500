@@ -13,3 +13,10 @@ CREATE TABLE IF NOT EXISTS price_data (
     volume BIGINT,
     CONSTRAINT price_data_unique UNIQUE (stock_id, date)
 );
+
+CREATE TABLE IF NOT EXISTS fundamentals (
+    stock_id INT PRIMARY KEY REFERENCES stock_name(id),
+    pe_ratio NUMERIC,
+    pb_ratio NUMERIC,
+    market_cap BIGINT
+)

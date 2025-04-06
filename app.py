@@ -7,6 +7,7 @@ import argparse
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 from math import ceil
+from utils import connect_db, get_sp500_symbols
 
 load_dotenv(".env")
 
@@ -18,36 +19,15 @@ DB_PORT = os.getenv("POSTGRES_PORT")
 
 BATCH_SIZE = 20
 
-def connect_db():
-    try:
-        conn = psycopg2.connect(
-            dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST, port=DB_PORT
-        )
-        return conn
-    except Exception as e:
-        print(f"Database connection error: {e}")
-        exit(1)
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    print("Tables 'stock_name' and 'price_data' ensured.")
-
 def reset_tables():
         print("Resetting tables...")
         conn = connect_db()
         cur = conn.cursor()
-        cur.execute("TRUNCATE TABLE price_data, stock_name RESTART IDENTITY CASCADE;")
+        cur.execute("TRUNCATE TABLE fundamentals, price_data, stock_name RESTART IDENTITY CASCADE;")
         conn.commit()
         cur.close()
         conn.close()
         print("Tables reset.")
-
-def get_sp500_symbols():
-    print("Fetching S&P 500 company list...")
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    table = pd.read_html(url)[0]
-    return table["Symbol"].tolist()
 
 def insert_stock_names(symbols):
     conn = connect_db()
@@ -94,13 +74,15 @@ def fetch_and_store(batch_size = BATCH_SIZE):
 
     for i in range(total_batches):
         batch = symbols[i * batch_size : (i + 1) * batch_size]
-        print(f"\n Batch {i+1}/{total_batches}: {batch}")
+        print(f"\nBatch {i+1}/{total_batches}: {batch}")
 
         try:
             data = yf.download(batch, period="1d", group_by='ticker', threads=True)
         except Exception as e:
             print(f"Failed to fetch batch {i+1}: {e}")
             continue
+
+        rows = []
 
         for symbol in batch:
             try:
@@ -131,28 +113,37 @@ def fetch_and_store(batch_size = BATCH_SIZE):
                     float(latest["Close"]),
                     int(latest["Volume"]) if not pd.isna(latest["Volume"]) else None
                 )
-
-                cur.execute("""
-                    INSERT INTO price_data (stock_id, date, open, high, low, close, volume)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (stock_id, date) DO UPDATE SET
-                    open = EXCLUDED.open,
-                    high = EXCLUDED.high,
-                    low = EXCLUDED.low,
-                    close = EXCLUDED.close,
-                    volume = EXCLUDED.volume;
-                """, row)
-
-                print(f"{symbol} added")
+                rows.append(row)
+                print(f"Prepared {symbol}")
 
             except Exception as e:
-                print(f"Error with {symbol}: {e}")
+                print(f"Error processing {symbol}: {e}")
+
+        if rows:
+            try:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO price_data (stock_id, date, open, high, low, close, volume)
+                    VALUES %s
+                    ON CONFLICT (stock_id, date) DO UPDATE SET
+                        open = EXCLUDED.open,
+                        high = EXCLUDED.high,
+                        low = EXCLUDED.low,
+                        close = EXCLUDED.close,
+                        volume = EXCLUDED.volume;
+                    """,
+                    rows
+                )
+                print(f"Inserted {len(rows)} records into price_data.")
+            except Exception as e:
+                print(f"Batch insert failed: {e}")
 
         conn.commit()
 
     cur.close()
     conn.close()
-    print("Batching finished")
+    print("Batching finished.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="S&P 500 Stock Data Ingestion")
