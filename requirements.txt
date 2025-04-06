@@ -1,0 +1,5 @@
+python-dotenv
+yfinance
+pandas
+psycopg2
+lxml
